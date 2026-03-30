@@ -1,0 +1,233 @@
+name: CI/CD — Adverse Event Risk Predictor
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  release:
+    types: [created]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/ae-predictor
+
+jobs:
+  # ════════════════════════════════════════════════════════════
+  # JOB 1: Code Quality & Tests
+  # ════════════════════════════════════════════════════════════
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff mypy
+
+      - name: Lint with Ruff
+        run: ruff check python/ api/ dashboard/ tests/
+
+      - name: Run tests with pytest
+        run: |
+          pytest tests/ -v \
+            --cov=python \
+            --cov=api \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            -x
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage.xml
+          fail_ci_if_error: false
+
+  # ════════════════════════════════════════════════════════════
+  # JOB 2: Model Training Smoke Test
+  # ════════════════════════════════════════════════════════════
+  model-smoke-test:
+    name: Model Training Smoke Test
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Train model (synthetic data)
+        run: |
+          cd $GITHUB_WORKSPACE
+          python python/train_model.py --source synthetic --cv 3 --version ci-test
+
+      - name: Run evaluation
+        run: python python/evaluate_model.py
+
+      - name: Verify model artifact exists
+        run: |
+          ls -la models/
+          test -f models/ae_model.pkl
+          test -f models/model_metadata.json
+
+      - name: Upload model artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-artifacts-${{ github.sha }}
+          path: |
+            models/ae_model.pkl
+            models/model_metadata.json
+          retention-days: 30
+
+  # ════════════════════════════════════════════════════════════
+  # JOB 3: API Test
+  # ════════════════════════════════════════════════════════════
+  api-test:
+    name: API Integration Test
+    runs-on: ubuntu-latest
+    needs: model-smoke-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Train model for API test
+        run: python python/train_model.py --source synthetic --cv 2
+
+      - name: Start API server
+        run: |
+          cd api
+          uvicorn app:app --host 0.0.0.0 --port 8000 &
+          sleep 8
+
+      - name: Test health endpoint
+        run: curl -f http://localhost:8000/health
+
+      - name: Test predict endpoint
+        run: |
+          curl -X POST http://localhost:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{
+              "age": 68, "gender": 1, "length_of_stay": 4.5,
+              "heart_rate_mean": 95, "creatinine_max": 1.8,
+              "wbc_mean": 12.5, "drug_count": 10,
+              "polypharmacy_score": 5, "lab_abnormality_score": 2
+            }' | python -c "
+          import json, sys
+          r = json.load(sys.stdin)
+          assert 'risk_score' in r, 'Missing risk_score'
+          assert 'risk_category' in r, 'Missing risk_category'
+          assert 0 <= r['risk_score'] <= 1, 'Invalid risk_score range'
+          print(f\"✓ Predict OK: score={r['risk_score']:.4f}, cat={r['risk_category']}\")
+          "
+
+      - name: Test model-info endpoint
+        run: curl -f http://localhost:8000/model-info
+
+  # ════════════════════════════════════════════════════════════
+  # JOB 4: Docker Build
+  # ════════════════════════════════════════════════════════════
+  docker-build:
+    name: Docker Build & Push
+    runs-on: ubuntu-latest
+    needs: [test, model-smoke-test, api-test]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+
+    permissions:
+      contents: read
+      packages:  write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context:    .
+          target:     runtime
+          push:       true
+          tags:       ${{ steps.meta.outputs.tags }}
+          labels:     ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to:   type=gha,mode=max
+
+  # ════════════════════════════════════════════════════════════
+  # JOB 5: Deploy to Cloud (on release)
+  # ════════════════════════════════════════════════════════════
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: startsWith(github.ref, 'refs/tags/')
+    environment: production
+
+    steps:
+      - name: Deploy to Cloud Run (example)
+        run: |
+          echo "Deploying version ${{ github.ref_name }} to production..."
+          # Example GCP Cloud Run deploy:
+          # gcloud run deploy ae-predictor \
+          #   --image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }} \
+          #   --region us-central1 \
+          #   --platform managed \
+          #   --allow-unauthenticated \
+          #   --port 8000
+          echo "Deploy complete."
+
+      - name: Notify Slack
+        if: always()
+        run: |
+          echo "Deployment notification would go here"

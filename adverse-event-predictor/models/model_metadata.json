@@ -1,0 +1,73 @@
+{
+  "version": "v1",
+  "best_model_name": "extra_trees",
+  "description": "Extremely Randomised Trees",
+  "feature_names": [
+    "age",
+    "gender",
+    "length_of_stay",
+    "heart_rate_mean",
+    "creatinine_max",
+    "wbc_mean",
+    "drug_count",
+    "polypharmacy_score",
+    "lab_abnormality_score",
+    "tachycardia_flag",
+    "renal_impairment_flag",
+    "leukocytosis_flag",
+    "elderly_flag",
+    "long_stay_flag",
+    "high_polypharmacy_flag",
+    "critical_labs_flag",
+    "organ_failure_score",
+    "composite_clinical_risk",
+    "age_creatinine_interaction",
+    "hr_los_interaction",
+    "drug_lab_interaction",
+    "poly_creatinine_interaction",
+    "log_creatinine",
+    "log_los",
+    "log_wbc",
+    "log_drugs"
+  ],
+  "optimal_threshold": 0.4116686388137642,
+  "cv_metrics": {
+    "cv_roc_auc_mean": 0.6598953733269923,
+    "cv_roc_auc_std": 0.016731388950566764,
+    "cv_ap_mean": 0.20958105858184012,
+    "cv_f1_mean": 0.24821214103906292,
+    "cv_precision_mean": 0.1626361181383526,
+    "cv_recall_mean": 0.526829268292683
+  },
+  "test_metrics": {
+    "roc_auc": 0.6090744769512182,
+    "avg_precision": 0.16529683554033292
+  },
+  "classification_report": {
+    "0": {
+      "precision": 0.9411764705882353,
+      "recall": 0.4459308807134894,
+      "f1-score": 0.6051437216338881,
+      "support": 897.0
+    },
+    "1": {
+      "precision": 0.1356521739130435,
+      "recall": 0.7572815533980582,
+      "f1-score": 0.23008849557522124,
+      "support": 103.0
+    },
+    "accuracy": 0.478,
+    "macro avg": {
+      "precision": 0.5384143222506393,
+      "recall": 0.6016062170557739,
+      "f1-score": 0.41761610860455467,
+      "support": 1000.0
+    },
+    "weighted avg": {
+      "precision": 0.8582074680306905,
+      "recall": 0.478,
+      "f1-score": 0.5665130333498454,
+      "support": 1000.0
+    }
+  }
+}

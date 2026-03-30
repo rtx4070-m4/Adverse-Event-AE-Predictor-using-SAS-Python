@@ -1,0 +1,93 @@
+version: "3.9"
+
+# ============================================================
+# Adverse Event Risk Predictor - Docker Compose
+# Runs: API + Dashboard + (optional) PostgreSQL + MLflow
+# ============================================================
+
+services:
+
+  # ── FastAPI Prediction Service ──────────────────────────────
+  api:
+    build:
+      context: .
+      target:  runtime
+    container_name: ae_api
+    command: uvicorn api.app:app --host 0.0.0.0 --port 8000 --workers 2
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./models:/app/models
+      - ./data/processed:/app/data/processed
+    environment:
+      - PYTHONPATH=/app
+      - MIMIC_DB_URL=${MIMIC_DB_URL:-postgresql://postgres:postgres@postgres:5432/mimic}
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Streamlit Dashboard ────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      target:  runtime
+    container_name: ae_dashboard
+    command: streamlit run dashboard/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data/processed:/app/data/processed
+    environment:
+      - PYTHONPATH=/app
+      - API_URL=http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # ── PostgreSQL (MIMIC-III) ─────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: ae_postgres
+    environment:
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB:       mimic
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./data/raw/extract_features.sql:/docker-entrypoint-initdb.d/01_features.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── MLflow Tracking Server ─────────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.12.2
+    container_name: ae_mlflow
+    command: >
+      mlflow server
+        --backend-store-uri postgresql://postgres:postgres@postgres:5432/mlflow
+        --default-artifact-root /mlflow/artifacts
+        --host 0.0.0.0
+        --port 5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  mlflow_artifacts:
